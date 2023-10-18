@@ -1,6 +1,5 @@
 ## Data Wrangling
 library(tidymodels)
-library(ggmosaic)
 library(embed)
 library(vroom)
 
@@ -17,7 +16,7 @@ the_recipe <- recipe(ACTION~., data = train_data) %>%
   step_dummy(all_nominal_predictors())
 
 prep(the_recipe)
-bake(prep, new_data = train_data)
+bake(prep(the_recipe), new_data = train_data)
 
 
 ## LOGISTIC REGRESSION
@@ -36,8 +35,6 @@ logistic_preds <- predict(logistic_wf,
   bind_cols(., test_data) %>%
   select(id, Action) %>%
   rename(Id = id)
-
-vroom_write(logistic_preds, "LogisticPreds.csv", delim = ",")
 
 
 ## PENALIZED LOGISTIC REGRESSION
@@ -88,5 +85,51 @@ pen_logistic_preds <- predict(final_wf,
   select(id, Action) %>%
   rename(Id = id)
 
-vroom_write(pen_logistic_preds, "PenLogisticPreds.csv", delim = ",")
-best_tune
+
+## RANDOM FORESTS
+library(ranger)
+library(doParallel)
+
+# Set up parallel computing
+cl <- makePSOCKcluster(12)
+registerDoParallel(cl)
+
+forest_mod <- rand_forest(mtry = tune(),
+                          min_n = tune(),
+                          trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+forest_wf <- workflow() %>%
+  add_recipe(the_recipe) %>%
+  add_model(forest_mod)
+
+forest_tuning_grid <- grid_regular(mtry(range = c(1,10)),
+                                   min_n(),
+                                   levels = 5)
+
+folds <- vfold_cv(train_data, v = 5, repeats = 1)
+
+CV_results <- forest_wf %>%
+  tune_grid(resamples = folds,
+            grid = forest_tuning_grid,
+            metrics = metric_set(roc_auc))
+
+best_tune_forest <- CV_results %>%
+  select_best("roc_auc")
+
+final_forest_wf <- forest_wf %>%
+  finalize_workflow(best_tune_forest) %>%
+  fit(data = train_data)
+
+forest_preds <- predict(final_forest_wf,
+                              new_data = test_data,
+                              type = "prob") %>%
+  mutate(Action=ifelse(.pred_1>.95, 1, 0)) %>%
+  bind_cols(., test_data) %>%
+  select(id, Action) %>%
+  rename(Id = id)
+
+vroom_write(forest_preds, file = "ForestPreds.csv", delim = ",")
+
+stopCluster(cl)
