@@ -133,3 +133,53 @@ forest_preds <- predict(final_forest_wf,
 vroom_write(forest_preds, file = "ForestPreds.csv", delim = ",")
 
 stopCluster(cl)
+
+
+# K-Nearest Neighbors Model
+library(kknn)
+cl <- makePSOCKcluster(12)
+registerDoParallel(cl)
+
+train_data <- vroom("train.csv")
+
+test_data <- vroom("test.csv")
+
+train_data <- train_data %>%
+  mutate(ACTION = as.factor(ACTION))
+
+knn_model <- nearest_neighbor(neighbors = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kknn")
+
+knn_wf <- workflow() %>%
+  add_recipe(the_recipe) %>%
+  add_model(knn_model)
+
+tuning_grid_knn <- grid_regular(neighbors(),
+                                levels = 5)
+
+folds <- vfold_cv(train_data, v = 5, repeats = 1)
+
+CV_results <- knn_wf %>%
+  tune_grid(resamples = folds,
+            grid = tuning_grid_knn,
+            metrics = metric_set(roc_auc))
+
+best_tune_knn <- CV_results %>%
+  select_best("roc_auc")
+
+final_knn_wf <- knn_wf %>%
+  finalize_workflow(best_tune_knn) %>%
+  fit(data = train_data)
+
+knn_preds <- predict(final_knn_wf,
+                        new_data = test_data,
+                        type = "prob") %>%
+  mutate(Action=ifelse(.pred_1>.95, 1, 0)) %>%
+  bind_cols(., test_data) %>%
+  select(id, Action) %>%
+  rename(Id = id)
+
+vroom_write(knn_preds, file = "KNNPreds.csv", delim = ",")
+
+stopCluster(cl)
